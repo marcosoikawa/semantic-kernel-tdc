@@ -49,6 +49,14 @@ internal static class HttpRequest
         };
     }
 
+    public static HttpRequestMessage CreateDeleteBatchRequest(string url, object? payload = null)
+    {
+        return new(HttpMethod.Delete, url)
+        {
+            Content = GetJsonContent(payload)
+        };
+    }
+
     private static StringContent? GetJsonContent(object? payload)
     {
         if (payload is null)
