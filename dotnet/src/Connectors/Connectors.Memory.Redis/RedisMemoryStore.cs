@@ -138,17 +138,10 @@ public class RedisMemoryStore : IMemoryStore, IDisposable
     }
 
     /// <inheritdoc/>
-    public async IAsyncEnumerable<MemoryRecord> GetBatchAsync(string collectionName, IEnumerable<string> keys, bool withEmbeddings = false,
-        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    public IAsyncEnumerable<MemoryRecord> GetBatchAsync(string collectionName, IEnumerable<string> keys, bool withEmbeddings = false,
+        CancellationToken cancellationToken = default)
     {
-        foreach (var key in keys)
-        {
-            var result = await this.InternalGetAsync(collectionName, key, withEmbeddings, cancellationToken).ConfigureAwait(false);
-            if (result is not null)
-            {
-                yield return result;
-            }
-        }
+        return this.InternalGetBatchAsync(collectionName, keys.ToArray(), withEmbeddings, cancellationToken);
     }
 
     /// <inheritdoc />
@@ -357,6 +350,46 @@ public class RedisMemoryStore : IMemoryStore, IDisposable
             embedding: ReadOnlyMemory<float>.Empty,
             key: hashEntries.FirstOrDefault(x => x.Name == "key").Value,
             timestamp: ParseTimestamp((long?)hashEntries.FirstOrDefault(x => x.Name == "timestamp").Value));
+    }
+
+    private async IAsyncEnumerable<MemoryRecord> InternalGetBatchAsync(string collectionName, string[] keys, bool withEmbeddings, [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        var batch = this._database.CreateBatch();
+        var tasks = keys.Select(async key =>
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            HashEntry[] hashEntries = await batch.HashGetAllAsync(GetRedisKey(collectionName, key)).ConfigureAwait(false);
+
+            if (hashEntries.Length == 0)
+            {
+                return null;
+            }
+
+            if (withEmbeddings)
+            {
+                RedisValue embedding = hashEntries.FirstOrDefault(x => x.Name == "embedding").Value;
+                return MemoryRecord.FromJsonMetadata(
+                    json: hashEntries.FirstOrDefault(x => x.Name == "metadata").Value!,
+                    embedding: embedding.HasValue ? MemoryMarshal.Cast<byte, float>((byte[])embedding!).ToArray() : ReadOnlyMemory<float>.Empty,
+                    key: hashEntries.FirstOrDefault(x => x.Name == "key").Value,
+                    timestamp: ParseTimestamp((long?)hashEntries.FirstOrDefault(x => x.Name == "timestamp").Value));
+            }
+
+            return MemoryRecord.FromJsonMetadata(
+                json: hashEntries.FirstOrDefault(x => x.Name == "metadata").Value!,
+                embedding: ReadOnlyMemory<float>.Empty,
+                key: hashEntries.FirstOrDefault(x => x.Name == "key").Value,
+                timestamp: ParseTimestamp((long?)hashEntries.FirstOrDefault(x => x.Name == "timestamp").Value));
+        });
+
+        batch.Execute();
+        var results = await Task.WhenAll(tasks).ConfigureAwait(false);
+
+        foreach (var result in results)
+        {
+            yield return result;
+        }
     }
 
     private double GetSimilarity(Document document)
